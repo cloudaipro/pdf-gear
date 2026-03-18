@@ -5,6 +5,7 @@ A standalone Python desktop application for manipulating PDF files with a user-f
 ## Features
 
 - **Merge**: Combine multiple PDF files into a single document
+- **Split**: Split a PDF into multiple files (every page, every N pages, or custom ranges)
 - **Delete Pages**: Remove unwanted pages from a PDF
 - **Reorder**: Rearrange pages with intuitive move up/down/top/bottom controls
 - **Rotate**: Rotate pages by 90°, 180°, or 270 degrees
@@ -42,6 +43,15 @@ uv run python -m pdf_gear
 1. Click **Add Files** to select multiple PDF files
 2. Use **Move Up/Down** to arrange the order
 3. Click **Merge & Save** to combine them into one PDF
+
+### Split Tab
+1. Click **Open PDF** to select a file
+2. Choose a split mode:
+   - **Every page**: Each page becomes its own PDF
+   - **Every N pages**: Split into chunks of N pages
+   - **Custom ranges**: Define ranges like `1-3, 4-6, 7-10`
+3. Check the **Output Preview** to see what will be generated
+4. Click **Split & Save** and choose an output folder
 
 ### Delete Pages Tab
 1. Click **Open PDF** to select a file

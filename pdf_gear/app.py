@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """PDF Gear - A standalone PDF manipulation tool."""
 
+import os
 import sys
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
@@ -42,10 +43,11 @@ def render_thumbnails(pdf_path, width=THUMB_W, height=THUMB_H, rotations=None):
 # ---------------------------------------------------------------------------
 
 class ThumbnailPanel(tk.Frame):
-    """Scrollable grid of page thumbnails with multi-select."""
+    """Scrollable grid of page thumbnails with optional multi-select."""
 
-    def __init__(self, parent, **kw):
+    def __init__(self, parent, selectable=True, **kw):
         super().__init__(parent, **kw)
+        self._selectable = selectable
         self._thumbs = []       # PIL images
         self._tk_imgs = []      # prevent GC
         self._frames = []       # per-page frames
@@ -92,7 +94,7 @@ class ThumbnailPanel(tk.Frame):
 
     # -- public API --------------------------------------------------------
 
-    def load(self, thumbnails: list[Image.Image]):
+    def load(self, thumbnails: list[Image.Image], labels: list[str] | None = None):
         self.clear()
         self._thumbs = thumbnails
         self.page_count = len(thumbnails)
@@ -104,11 +106,13 @@ class ThumbnailPanel(tk.Frame):
             frame = tk.Frame(self.inner, bd=2, relief="flat", bg="#f0f0f0", padx=4, pady=4)
             lbl = tk.Label(frame, image=tk_img, bg="white", bd=1, relief="solid")
             lbl.pack()
-            txt = tk.Label(frame, text=f"Page {i + 1}", bg="#f0f0f0", font=("Arial", 9))
+            label_text = labels[i] if labels else f"Page {i + 1}"
+            txt = tk.Label(frame, text=label_text, bg="#f0f0f0", font=("Arial", 9))
             txt.pack()
 
-            for w in (frame, lbl, txt):
-                w.bind("<Button-1>", lambda _e, idx=i: self._toggle(idx))
+            if self._selectable:
+                for w in (frame, lbl, txt):
+                    w.bind("<Button-1>", lambda _e, idx=i: self._toggle(idx))
 
             self._frames.append(frame)
         self._layout()
@@ -165,23 +169,31 @@ class MergeTab(tk.Frame):
     def __init__(self, parent):
         super().__init__(parent)
         self.files: list[str] = []
+        self._file_thumbs: dict[str, list[Image.Image]] = {}
 
-        left = tk.Frame(self)
-        left.pack(side="left", fill="both", expand=True, padx=(10, 5), pady=10)
+        # top / bottom split
+        paned = ttk.PanedWindow(self, orient="vertical")
+        paned.pack(fill="both", expand=True, padx=10, pady=10)
 
-        tk.Label(left, text="PDF Files to Merge", font=("Arial", 12, "bold")).pack(anchor="w")
+        # --- top: file list + buttons ---
+        top = tk.Frame(paned)
+        paned.add(top, weight=1)
 
-        lf = tk.Frame(left)
-        lf.pack(fill="both", expand=True, pady=(5, 0))
+        tk.Label(top, text="PDF Files to Merge", font=("Arial", 12, "bold")).pack(anchor="w")
+
+        controls = tk.Frame(top)
+        controls.pack(fill="both", expand=True, pady=(5, 0))
+
+        lf = tk.Frame(controls)
+        lf.pack(side="left", fill="both", expand=True)
         self.listbox = tk.Listbox(lf, selectmode="single", font=("Arial", 10))
         sb = ttk.Scrollbar(lf, orient="vertical", command=self.listbox.yview)
         self.listbox.configure(yscrollcommand=sb.set)
         self.listbox.pack(side="left", fill="both", expand=True)
         sb.pack(side="right", fill="y")
 
-        right = tk.Frame(self)
-        right.pack(side="right", fill="y", padx=(5, 10), pady=10)
-
+        bf = tk.Frame(controls)
+        bf.pack(side="right", fill="y", padx=(5, 0))
         for text, cmd in [
             ("Add Files", self._add),
             ("Remove", self._remove),
@@ -189,10 +201,17 @@ class MergeTab(tk.Frame):
             ("Move Down", self._down),
             ("Clear All", self._clear),
         ]:
-            ttk.Button(right, text=text, command=cmd, width=15).pack(pady=3)
+            ttk.Button(bf, text=text, command=cmd, width=15).pack(pady=3)
+        ttk.Separator(bf, orient="horizontal").pack(fill="x", pady=10)
+        ttk.Button(bf, text="Merge & Save", command=self._merge, width=15).pack(pady=3)
 
-        ttk.Separator(right, orient="horizontal").pack(fill="x", pady=10)
-        ttk.Button(right, text="Merge & Save", command=self._merge, width=15).pack(pady=3)
+        # --- bottom: page preview ---
+        bottom = tk.Frame(paned)
+        paned.add(bottom, weight=2)
+
+        tk.Label(bottom, text="Page Preview", font=("Arial", 10, "bold")).pack(anchor="w")
+        self.panel = ThumbnailPanel(bottom, selectable=False)
+        self.panel.pack(fill="both", expand=True)
 
     # -- actions -----------------------------------------------------------
 
@@ -205,12 +224,19 @@ class MergeTab(tk.Frame):
                 n = "?"
             self.files.append(p)
             self.listbox.insert("end", f"{Path(p).name}  ({n} pages)")
+            if p not in self._file_thumbs:
+                self._file_thumbs[p] = render_thumbnails(p)
+        if paths:
+            self._refresh_preview()
 
     def _remove(self):
         sel = self.listbox.curselection()
         if sel:
+            path = self.files.pop(sel[0])
             self.listbox.delete(sel[0])
-            self.files.pop(sel[0])
+            if path not in self.files:
+                self._file_thumbs.pop(path, None)
+            self._refresh_preview()
 
     def _up(self):
         sel = self.listbox.curselection()
@@ -221,6 +247,7 @@ class MergeTab(tk.Frame):
             self.listbox.delete(i)
             self.listbox.insert(i - 1, txt)
             self.listbox.selection_set(i - 1)
+            self._refresh_preview()
 
     def _down(self):
         sel = self.listbox.curselection()
@@ -231,10 +258,24 @@ class MergeTab(tk.Frame):
             self.listbox.delete(i)
             self.listbox.insert(i + 1, txt)
             self.listbox.selection_set(i + 1)
+            self._refresh_preview()
 
     def _clear(self):
         self.files.clear()
+        self._file_thumbs.clear()
         self.listbox.delete(0, "end")
+        self.panel.clear()
+
+    def _refresh_preview(self):
+        all_thumbs: list[Image.Image] = []
+        all_labels: list[str] = []
+        for path in self.files:
+            thumbs = self._file_thumbs.get(path, [])
+            name = Path(path).name
+            for i, t in enumerate(thumbs):
+                all_thumbs.append(t)
+                all_labels.append(f"{name}\nPage {i + 1}")
+        self.panel.load(all_thumbs, labels=all_labels)
 
     def _merge(self):
         if len(self.files) < 2:
@@ -565,6 +606,205 @@ class RotateTab(tk.Frame):
 
 
 # ===================================================================
+# SPLIT TAB
+# ===================================================================
+
+class SplitTab(tk.Frame):
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.pdf_path = None
+        self.page_count = 0
+
+        # top bar
+        top = tk.Frame(self)
+        top.pack(fill="x", padx=10, pady=(10, 5))
+        ttk.Button(top, text="Open PDF", command=self._open).pack(side="left")
+        self.file_lbl = tk.Label(top, text="No file loaded", font=("Arial", 10))
+        self.file_lbl.pack(side="left", padx=10)
+
+        # left / right split
+        paned = ttk.PanedWindow(self, orient="horizontal")
+        paned.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # --- left: controls ---
+        left = tk.Frame(paned)
+        paned.add(left, weight=1)
+
+        # split mode selection
+        mode_frame = tk.LabelFrame(left, text="Split Mode", padx=10, pady=10)
+        mode_frame.pack(fill="x", pady=(0, 5))
+
+        self.mode = tk.StringVar(value="all")
+
+        tk.Radiobutton(
+            mode_frame, text="Split every page into a separate PDF",
+            variable=self.mode, value="all", command=self._on_mode_change,
+        ).pack(anchor="w")
+
+        fixed_frame = tk.Frame(mode_frame)
+        fixed_frame.pack(anchor="w", pady=(5, 0))
+        tk.Radiobutton(
+            fixed_frame, text="Split every",
+            variable=self.mode, value="fixed", command=self._on_mode_change,
+        ).pack(side="left")
+        self.fixed_var = tk.StringVar(value="5")
+        self.fixed_entry = tk.Entry(fixed_frame, textvariable=self.fixed_var, width=5)
+        self.fixed_entry.pack(side="left", padx=3)
+        tk.Label(fixed_frame, text="pages").pack(side="left")
+
+        tk.Radiobutton(
+            mode_frame, text="Split by custom page ranges:",
+            variable=self.mode, value="ranges", command=self._on_mode_change,
+        ).pack(anchor="w", pady=(5, 0))
+
+        range_frame = tk.Frame(mode_frame)
+        range_frame.pack(fill="x", pady=(2, 0))
+        self.range_entry = tk.Entry(range_frame, font=("Arial", 10))
+        self.range_entry.pack(side="left", fill="x", expand=True)
+        self.range_hint = tk.Label(
+            range_frame, text='e.g. "1-3, 4-6, 7-10"', font=("Arial", 9), fg="gray",
+        )
+        self.range_hint.pack(side="left", padx=(5, 0))
+
+        # output preview list
+        preview_frame = tk.LabelFrame(left, text="Output Preview", padx=10, pady=10)
+        preview_frame.pack(fill="both", expand=True, pady=(5, 0))
+
+        lf = tk.Frame(preview_frame)
+        lf.pack(fill="both", expand=True)
+        self.preview_listbox = tk.Listbox(lf, font=("Arial", 10))
+        sb = ttk.Scrollbar(lf, orient="vertical", command=self.preview_listbox.yview)
+        self.preview_listbox.configure(yscrollcommand=sb.set)
+        self.preview_listbox.pack(side="left", fill="both", expand=True)
+        sb.pack(side="right", fill="y")
+
+        ttk.Button(preview_frame, text="Refresh Preview", command=self._refresh_preview).pack(pady=(5, 0))
+
+        # --- right: page thumbnails ---
+        right = tk.Frame(paned)
+        paned.add(right, weight=1)
+
+        tk.Label(right, text="Page Preview", font=("Arial", 10, "bold")).pack(anchor="w")
+        self.panel = ThumbnailPanel(right, selectable=False)
+        self.panel.pack(fill="both", expand=True)
+
+        # bottom
+        bot = tk.Frame(self)
+        bot.pack(fill="x", padx=10, pady=(5, 10))
+        ttk.Button(bot, text="Split & Save", command=self._split).pack(side="right")
+
+    def _open(self):
+        path = filedialog.askopenfilename(title="Open PDF", filetypes=[("PDF", "*.pdf")])
+        if not path:
+            return
+        self.pdf_path = path
+        self.page_count = len(PdfReader(path).pages)
+        self.file_lbl.config(text=f"{Path(path).name} ({self.page_count} pages)")
+        self.panel.load(render_thumbnails(path))
+        self._refresh_preview()
+
+    def _on_mode_change(self):
+        self._refresh_preview()
+
+    def _parse_ranges(self) -> list[tuple[int, int]] | None:
+        """Parse the range entry text. Returns list of (start, end) 0-indexed tuples, or None on error."""
+        text = self.range_entry.get().strip()
+        if not text:
+            return None
+        ranges = []
+        for part in text.split(","):
+            part = part.strip()
+            if not part:
+                continue
+            if "-" in part:
+                tokens = part.split("-", 1)
+                try:
+                    a, b = int(tokens[0].strip()), int(tokens[1].strip())
+                except ValueError:
+                    return None
+                if a < 1 or b < a or b > self.page_count:
+                    return None
+                ranges.append((a - 1, b - 1))  # convert to 0-indexed
+            else:
+                try:
+                    p = int(part)
+                except ValueError:
+                    return None
+                if p < 1 or p > self.page_count:
+                    return None
+                ranges.append((p - 1, p - 1))
+        return ranges if ranges else None
+
+    def _compute_chunks(self) -> list[tuple[int, int]] | None:
+        """Return list of (start, end) 0-indexed inclusive page ranges for current mode."""
+        if not self.pdf_path:
+            return None
+        mode = self.mode.get()
+        if mode == "all":
+            return [(i, i) for i in range(self.page_count)]
+        elif mode == "fixed":
+            try:
+                n = int(self.fixed_var.get())
+            except ValueError:
+                return None
+            if n < 1:
+                return None
+            chunks = []
+            for start in range(0, self.page_count, n):
+                end = min(start + n - 1, self.page_count - 1)
+                chunks.append((start, end))
+            return chunks
+        elif mode == "ranges":
+            return self._parse_ranges()
+        return None
+
+    def _refresh_preview(self):
+        self.preview_listbox.delete(0, "end")
+        if not self.pdf_path:
+            return
+        chunks = self._compute_chunks()
+        if chunks is None:
+            self.preview_listbox.insert("end", "  (invalid input)")
+            return
+        stem = Path(self.pdf_path).stem
+        for i, (start, end) in enumerate(chunks, 1):
+            npages = end - start + 1
+            if start == end:
+                desc = f"page {start + 1}"
+            else:
+                desc = f"pages {start + 1}-{end + 1}"
+            self.preview_listbox.insert("end", f"  {stem}_part{i}.pdf  ({desc}, {npages} pg)")
+
+    def _split(self):
+        if not self.pdf_path:
+            messagebox.showwarning("Split", "Open a PDF first.")
+            return
+        chunks = self._compute_chunks()
+        if not chunks:
+            messagebox.showwarning("Split", "Invalid split configuration.")
+            return
+
+        out_dir = filedialog.askdirectory(title="Select Output Folder")
+        if not out_dir:
+            return
+
+        try:
+            reader = PdfReader(self.pdf_path)
+            stem = Path(self.pdf_path).stem
+            for i, (start, end) in enumerate(chunks, 1):
+                writer = PdfWriter()
+                for p in range(start, end + 1):
+                    writer.add_page(reader.pages[p])
+                out_path = os.path.join(out_dir, f"{stem}_part{i}.pdf")
+                with open(out_path, "wb") as f:
+                    writer.write(f)
+            messagebox.showinfo("Split", f"Created {len(chunks)} PDF file(s) in:\n{out_dir}")
+        except Exception as e:
+            messagebox.showerror("Split Error", str(e))
+
+
+# ===================================================================
 # MAIN APPLICATION
 # ===================================================================
 
@@ -590,6 +830,7 @@ class PDFGearApp:
         nb.pack(fill="both", expand=True, padx=10, pady=10)
 
         nb.add(MergeTab(nb), text="  Merge  ")
+        nb.add(SplitTab(nb), text="  Split  ")
         nb.add(DeleteTab(nb), text="  Delete Pages  ")
         nb.add(ReorderTab(nb), text="  Reorder  ")
         nb.add(RotateTab(nb), text="  Rotate  ")

@@ -78,7 +78,6 @@ uv run python -m pdf_gear
 pdf-gear/
 ├── README.md
 ├── pyproject.toml
-├── uv.lock
 └── pdf_gear/
     ├── __init__.py
     ├── __main__.py

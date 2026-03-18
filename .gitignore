@@ -17,3 +17,4 @@ build/
 *.tar.gz
 *.whl
 *.coverage
+uv.lock
